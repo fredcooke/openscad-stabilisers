@@ -1,0 +1,353 @@
+// Copyright 2026 Geoff Leyland and contributors
+// SPDX-License-Identifier: MIT
+
+// See https://github.com/geoffleyland/tails.scad
+
+include <BOSL2/std.scad>
+include <BOSL2/screws.scad>
+
+/* [Hidden] */
+$fs=0.1;
+
+/* [Mount] */
+MOUNT = "axis";                 // ["axis"]
+/* [Foil parameters] */
+// (mm)
+SPAN = 225;                     // [100:5:280]
+// (mm)
+ROOT_CHORD = 45;                // [20:1:60]
+FOIL_FAMILY = "NACA-4";         // ["NACA-4"]
+// (Fraction of local chord)
+MAX_THICKNESS = 0.1;            // [0.04:0.005:0.2]
+// (Fraction of local chord)
+MAX_CAMBER = 0.02;              // [0.0:0.005:0.1]
+// (Fraction of local chord from leading edge)
+MAX_CAMBER_POSITION = 0.4;      // [0.2:0.05:0.7]
+// (Affects sweep, fraction of local chord from leading edge)
+REFERENCE_LINE = 0.4;           // [0:0.05:2]
+// (mm)
+DROOP = 3;                      // [-10:0.5:10]
+// (degrees)
+TWIST = 0;                      // [-10:0.5:10]
+
+/* [Text] */
+SHOW_TEXT = true;
+TEXT_SIZE = 3;                  // [1:10]
+TEXT_DEPTH = 0.5;               // [0.1:0.1:2]
+
+
+rotate([0, -90, 0]) rotate([0, 0, -20])
+    tail(
+        SPAN,
+        ROOT_CHORD,
+        mount = MOUNT,
+        foil_family = FOIL_FAMILY,
+        max_thickness = MAX_THICKNESS,
+        max_camber = MAX_CAMBER,
+        max_camber_position = MAX_CAMBER_POSITION,
+        reference_line = REFERENCE_LINE,
+        droop = DROOP,
+        twist = TWIST,
+
+        show_text = SHOW_TEXT,
+        text_size = TEXT_SIZE,
+        text_depth = TEXT_DEPTH
+    );
+
+
+//- MOUNT OPTIONS ---------------------------------------------------------------------------------
+
+MOUNTS = [
+    ["axis", [
+        ["profile", [[90,0],[0,0],[0,-1],[2,-3.5],[8,-6.5],[15,-8.5],[23,-9.5],[30,-10],[90,-10]] ],
+        ["half_plan", [[90,1],[70,4.5],[35,10],[23,11],[13,10.5],[7,9],[4.5,8],[2,6.5],[1,4.5],[0,1]] ],
+        ["screw_holes", [
+            [["location", 23], ["size", "M6"]],
+            [["location", 58], ["size", "M6"]],
+        ]]
+    ]]
+];
+
+
+//- NACA FOILS ------------------------------------------------------------------------------------
+
+function naca_front_camber(x, max_camber, max_camber_position) =
+    max_camber / max_camber_position^2 *
+    (2 * max_camber_position * x - x^2);
+
+function naca_front_camber_gradient(x, max_camber, max_camber_position) =
+    2 * max_camber / max_camber_position^2 *
+    (max_camber_position - x);
+
+function naca_back_camber(x, max_camber, max_camber_position) =
+    max_camber / (1 - max_camber_position)^2 *
+    (1 + 2 * max_camber_position * (x - 1) - x^2);
+
+function naca_back_camber_gradient(x, max_camber, max_camber_position) =
+    2 * max_camber / (1 - max_camber_position)^2 *
+    (max_camber_position - x);
+
+function naca_camber(x, max_camber, max_camber_position) =
+    x < max_camber_position ?
+        naca_front_camber(x, max_camber, max_camber_position) :
+        naca_back_camber(x, max_camber, max_camber_position);
+
+function naca_camber_gradient(x, max_camber, max_camber_position) =
+    x < max_camber_position ?
+        naca_front_camber_gradient(x, max_camber, max_camber_position) :
+        naca_back_camber_gradient(x, max_camber, max_camber_position);
+
+/* [Hidden] */
+NACA_A0 =  0.2969;
+NACA_A1 = -0.1260;
+NACA_A2 = -0.3516;
+NACA_A3 =  0.2843;
+NACA_A4 = -0.1015;
+
+function naca_half_thickness(x, max_thickness) =
+    max_thickness / 0.2 * (
+        NACA_A0 * x^0.5 +
+        NACA_A1 * x +
+        NACA_A2 * x^2 +
+        NACA_A3 * x^3 +
+        NACA_A4 * x^4);
+
+naca_top = function(x, parameters)
+    let (
+        max_camber = struct_val(parameters, "max_camber"),
+        max_camber_position = struct_val(parameters, "max_camber_position"),
+        max_thickness = struct_val(parameters, "max_thickness")
+    )
+    let (
+        half_thickness = naca_half_thickness(x, max_thickness),
+        camber = naca_camber(x, max_camber, max_camber_position),
+        camber_gradient = naca_camber_gradient(x, max_camber, max_camber_position),
+        theta = atan(camber_gradient)
+    )
+    [x - half_thickness * sin(theta), camber + half_thickness * cos(theta)];
+
+naca_bottom = function(x, parameters)
+    let (
+        max_camber = struct_val(parameters, "max_camber"),
+        max_camber_position = struct_val(parameters, "max_camber_position"),
+        max_thickness = struct_val(parameters, "max_thickness")
+    )
+    let (
+        half_thickness = naca_half_thickness(x, max_thickness),
+        camber = naca_camber(x, max_camber, max_camber_position),
+        camber_gradient = naca_camber_gradient(x, max_camber, max_camber_position),
+        theta = atan(camber_gradient)
+    )
+    [x + half_thickness * sin(theta), camber - half_thickness * cos(theta)];
+
+
+naca_profile = function(parameters)
+    let (
+        point_count = struct_val(parameters, "point_count")
+    )
+    let (step = 180 / (point_count / 2 - 1))
+    concat(
+        [for (beta = [180:-step:0]) let (x = (1 - cos(beta)) / 2)
+            naca_top(x, parameters)],
+        [for (beta = [step:step:180]) let (x = (1 - cos(beta)) / 2)
+            naca_bottom(x, parameters)]
+    );
+
+
+naca_name = function(parameters)
+    let (
+        max_camber = struct_val(parameters, "max_camber"),
+        max_camber_position = struct_val(parameters, "max_camber_position"),
+        max_thickness = struct_val(parameters, "max_thickness")
+    )
+    str("N", round(max_camber*100), round(max_camber_position * 10), format_int(round(max_thickness * 100),2));
+
+
+//-------------------------------------------------------------------------------------------------
+
+FOILS = [
+    ["NACA-4", [
+        ["name", naca_name],
+        ["profile", naca_profile],
+        ["top", naca_top],
+        ["bottom", naca_bottom],
+    ]]
+];
+
+
+//-------------------------------------------------------------------------------------------------
+
+function wing_vnf(airfoil, sections) =
+    let (points = [for (i = [0:len(sections)-1])
+        let (span = sections[i][0], chord = sections[i][1], centre=sections[i][2], twist=sections[i][3], washdown=sections[i][4])
+            [for (p = move([0, -washdown, 0], scale(chord, zrot(twist, move([-centre, 0, 0], airfoil)))))
+                point3d(p, span)]])
+    skin(points, slices=0, caps=true);
+
+
+//-------------------------------------------------------------------------------------------------
+
+function wing_pos(x, y, parameters) =
+    let (span = struct_val(parameters, "span"))
+    (abs(x) > span / 2) ? [1, 0] :
+        let (
+            root_chord = struct_val(parameters, "root_chord"),
+            reference_line = struct_val(parameters, "reference_line"),
+            a = asin(2 * x / span),
+            chord = cos(a) * root_chord,
+            baseline = root_chord * reference_line,
+            leading_edge = baseline - reference_line * chord,
+            trailing_edge = baseline + (1 - reference_line) * chord
+        )
+        (y < leading_edge || y > trailing_edge) ? [1, 0]:
+            [chord, (y - leading_edge) / chord]
+;
+
+function wing_top(x, y, foil, parameters) =
+    let (
+        pos = wing_pos(x, y, parameters),
+        chord = pos[0],
+        alpha = pos[1]
+    )
+    (alpha == 0) ? [0,0] :
+        (struct_val(foil, "top"))(alpha, parameters) * chord
+;
+
+function wing_bottom(x, y, foil, parameters) =
+    let (
+        pos = wing_pos(x, y, parameters),
+        chord = pos[0],
+        alpha = pos[1]
+    )
+    (alpha == 0) ? [0,0] :
+        (struct_val(foil, "bottom"))(alpha, parameters) * chord
+;
+
+
+//-------------------------------------------------------------------------------------------------
+
+module tail_screw_hole(y, size, foil, parameters) {
+    info = screw_info(size, head="flat");
+    head_d = struct_val(info, "head_size_sharp");
+    head_r = head_d / 2;
+    z = min(
+        wing_bottom(0, y - head_r, foil, parameters)[1],
+        wing_bottom(0, y, foil, parameters)[1],
+        wing_bottom(0, y + head_r, foil, parameters)[1]
+    );
+    right(y) fwd(z) rotate([-90,0,0])
+        screw_hole(size, head="flat", length=20, counterbore=1.5, head_oversize=-1, anchor="top");
+}
+
+
+//-------------------------------------------------------------------------------------------------
+
+module tail(
+    span,
+    root_chord,
+    mount                   = "axis",
+    foil_family             = "NACA-4",
+    max_thickness           = 0.1,
+    max_camber              = 0.02,
+    max_camber_position     = 0.4,
+    reference_line          = 0.4,
+    droop                   = 3,
+    twist                   = 0,
+    plan_form               = "elliptical",
+    show_text               = true,
+    text_size               = 3,
+    text_depth              = 0.5,
+    font                    = "Tahoma: style=Bold",
+    point_count             = 82) {
+
+    // Prepare the mount
+    MOUNT_INFO = struct_val(MOUNTS, mount);
+    mount_profile = smooth_path(struct_val(MOUNT_INFO, "profile"), method="corners", relsize=1);
+    mount_half_plan = struct_val(MOUNT_INFO, "half_plan");
+    n = len(mount_half_plan);
+    mount_plan_points = concat(mount_half_plan, [for (i = [n-1:-1:0]) [mount_half_plan[i][0], -mount_half_plan[i][1]]]);
+    mount_plan = smooth_path(mount_plan_points, method="corners", relsize=1);
+
+    // Get the foil info
+    FOIL_INFO = (struct_val(FOILS, foil_family));
+
+    foil_parameters = [
+        ["span",                span],
+        ["root_chord",          root_chord],
+        ["max_thickness",       max_thickness],
+        ["max_camber",          max_camber],
+        ["max_camber_position", max_camber_position],
+        ["reference_line",      reference_line],
+        ["point_count",         point_count]
+    ];
+
+    foil_name = (struct_val(FOIL_INFO, "name"))(foil_parameters);
+    //foil_name = "RECT";
+    foil_profile = (struct_val(FOIL_INFO, "profile"))(foil_parameters);
+    foil_bottom = struct_val(FOIL_INFO, "bottom");
+
+    // Figure out some foil parameters
+    mean_thickness = polygon_area(foil_profile);
+    square_profile = [[1, -mean_thickness/2],[0, -mean_thickness/2], [0, mean_thickness/2], [1, mean_thickness/2]];
+
+    area = PI * root_chord/2 * span/2;
+    aspect_ratio = span*span/area;
+
+    echo(str("\n",
+        "  shape: ", foil_name, "\n",
+        "  span x root chord: ", span, "mm x ", root_chord, "mm\n",
+        "  plan area: ", area/100, "cm^2\n",
+        "  aspect ratio: ", aspect_ratio, "\n",
+        "  mean chord: ", area/span, "mm\n",
+        "  mean thickness: ", mean_thickness * area/span, "mm\n"
+    ));
+
+    module foil_text(string) {
+        translate([0, -50, 0]) rotate([90, 0, 180]) linear_extrude(height=100)
+            text(string, valign="center", size=text_size, font=font);
+    }
+
+    // Compute the foil sections
+    sections = [for (a = [85:-5:-85]) [
+        sin(a) * span/2,
+        plan_form == "rect" ? area/span : cos(a) * root_chord,
+        reference_line,
+        (1-cos(a)) * twist,
+        (1-cos(a)) * -droop,
+        ]];
+
+
+    module simple_tail() {
+        intersection() {
+            down(15) linear_extrude(height=30) polygon(mount_profile);
+            rotate([-90,0,0]) down(50) linear_extrude(height=100) polygon(mount_plan);
+        }
+        translate([reference_line*root_chord, 0, 0]) rotate([180,0,0])
+            vnf_polyhedron(wing_vnf(foil_profile, sections));
+    }
+
+    difference() {
+        simple_tail();
+
+        for (hole = struct_val(MOUNT_INFO, "screw_holes")) {
+            y = struct_val(hole, "location");
+            size = struct_val(hole, "size");
+            tail_screw_hole(y, size, FOIL_INFO, foil_parameters);
+        }
+
+        if (show_text) {
+            difference() {
+                union() {
+                    translate([48, 0, 4.5])  foil_text(str(round(span), "x", round(root_chord)));
+                    translate([48, 0, 0])    foil_text(str(round(area/100), " cm\u00b2"));
+                    translate([48, 0, -4.5]) foil_text(str("AR ", round(aspect_ratio*10)/10));
+                    translate([80, 0, 0])    foil_text(foil_name);
+                }
+                translate([0, -text_depth, 0]) simple_tail();
+            }
+        }
+    }
+}
+
+
+//-------------------------------------------------------------------------------------------------
